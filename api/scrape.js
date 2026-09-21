@@ -1,3 +1,5 @@
+import JSZip from "jszip";
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -9,6 +11,7 @@ export default async function handler(req, res) {
 
   try {
     let target = req.query.url;
+    const wantZip = req.query.zip === "true";
 
     if (!target) {
       return res.status(400).json({
@@ -22,17 +25,6 @@ export default async function handler(req, res) {
       target = "https://" + target;
     }
 
-    let parsed;
-    try {
-      parsed = new URL(target);
-    } catch {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid URL",
-        powered_by: "𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋"
-      });
-    }
-
     const response = await fetch(target, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -40,6 +32,14 @@ export default async function handler(req, res) {
       },
       redirect: "follow"
     });
+
+    if (!response.ok) {
+      return res.status(502).json({
+        success: false,
+        error: `Failed to fetch: ${response.status}`,
+        powered_by: "𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋"
+      });
+    }
 
     const finalUrl = response.url;
     const html = await response.text();
@@ -50,46 +50,165 @@ export default async function handler(req, res) {
 
     const getAll = (regex) => [...html.matchAll(regex)].map(m => m[1]).filter(Boolean);
 
-    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : null;
+    // تمام لنکس نکالو
+    const scriptLinks = [...new Set(getAll(/<script[^>]+src=["']([^"']+)["']/gi).map(abs))];
+    const styleLinks  = [...new Set(getAll(/<link[^>]+rel=["']?stylesheet["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
+    const imageLinks  = [...new Set(getAll(/<img[^>]+src=["']([^"']+)["']/gi).map(abs))];
+    const iconLinks   = [...new Set(getAll(/<link[^>]+rel=["']?(?:icon|shortcut icon|apple-touch-icon)["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
 
-    const meta = {};
-    [...html.matchAll(/<meta\s+([^>]+)>/gi)].forEach(tag => {
-      const name = tag[1].match(/(?:name|property)=["']([^"']+)["']/i);
-      const content = tag[1].match(/content=["']([^"']*)["']/i);
-      if (name && content) meta[name[1]] = content[1];
-    });
+    // فائل کا اصل نام اور فولڈر نکالنے والا فنکشن
+    function getPathFromUrl(fileUrl) {
+      try {
+        const u = new URL(fileUrl);
+        let path = u.pathname;
 
-    const scripts = [...new Set(getAll(/<script[^>]+src=["']([^"']+)["']/gi).map(abs))];
-    const styles  = [...new Set(getAll(/<link[^>]+rel=["']?stylesheet["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
-    const images  = [...new Set(getAll(/<img[^>]+src=["']([^"']+)["']/gi).map(abs))];
-    const icons   = [...new Set(getAll(/<link[^>]+rel=["']?(?:icon|shortcut icon|apple-touch-icon)["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
-    const links   = [...new Set(getAll(/<a[^>]+href=["']([^"']+)["']/gi).map(abs))].slice(0, 50);
-    const videos  = [...new Set(getAll(/<(?:video|source)[^>]+src=["']([^"']+)["']/gi).map(abs))];
-    const audios  = [...new Set(getAll(/<(?:audio|source)[^>]+src=["']([^"']+)["']/gi).map(abs))];
-    const iframes = [...new Set(getAll(/<iframe[^>]+src=["']([^"']+)["']/gi).map(abs))];
+        // آخر میں / ہو تو ہٹا دو
+        if (path.endsWith("/")) path = path.slice(0, -1);
 
-    const headersObj = {};
-    response.headers.forEach((v, k) => headersObj[k] = v);
+        // اگر صرف / ہو تو index رکھو
+        if (!path || path === "/") return "index.html";
 
+        // شروع کا / ہٹا دو
+        if (path.startsWith("/")) path = path.slice(1);
+
+        return path || "file";
+      } catch {
+        return "file";
+      }
+    }
+
+    // ========== CSS & JS ڈاؤن لوڈ ==========
+    const cssFiles = [];
+    const jsFiles = [];
+
+    for (const link of styleLinks.slice(0, 15)) {
+      try {
+        const r = await fetch(link, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (r.ok) {
+          const code = await r.text();
+          cssFiles.push({
+            url: link,
+            path: getPathFromUrl(link),
+            code
+          });
+        }
+      } catch {}
+    }
+
+    for (const link of scriptLinks.slice(0, 15)) {
+      try {
+        const r = await fetch(link, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (r.ok) {
+          const code = await r.text();
+          jsFiles.push({
+            url: link,
+            path: getPathFromUrl(link),
+            code
+          });
+        }
+      } catch {}
+    }
+
+    // ========== ZIP بنانا ==========
+    if (wantZip) {
+      const zip = new JSZip();
+
+      // 1. Main HTML
+      zip.file("index.html", html);
+
+      // 2. CSS فائلیں (اصل نام + فولڈر کے ساتھ)
+      cssFiles.forEach((file) => {
+        // اگر path میں css/ نہیں ہے تو css/ فولڈر میں ڈال دو
+        let finalPath = file.path;
+        if (!finalPath.includes("/") && !finalPath.endsWith(".css")) {
+          finalPath = `css/${finalPath}.css`;
+        } else if (!finalPath.includes("/")) {
+          finalPath = `css/${finalPath}`;
+        }
+        zip.file(finalPath, file.code);
+      });
+
+      // 3. JS فائلیں
+      jsFiles.forEach((file) => {
+        let finalPath = file.path;
+        if (!finalPath.includes("/") && !finalPath.endsWith(".js")) {
+          finalPath = `js/${finalPath}.js`;
+        } else if (!finalPath.includes("/")) {
+          finalPath = `js/${finalPath}`;
+        }
+        zip.file(finalPath, file.code);
+      });
+
+      // 4. README
+      const readme = `
+════════════════════════════════════════════════════
+                𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋
+════════════════════════════════════════════════════
+
+Full Website Source Extractor
+Powered by 𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋
+
+Extracted From : ${finalUrl}
+Date           : ${new Date().toLocaleString()}
+
+────────────────────────────────────────────────────
+JOIN OFFICIAL CHANNEL:
+https://whatsapp.com/channel/0029Vb6lszR7YSd3iYfa2V0n
+────────────────────────────────────────────────────
+
+ZIP Contents:
+- index.html          → Complete HTML source
+- css/ or original    → All CSS files (original names)
+- js/  or original    → All JS files (original names)
+- assets-list.txt     → Images + Icons links
+
+Note: Images are listed only (not downloaded) to keep size small.
+
+════════════════════════════════════════════════════
+          𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋 • Full Site Extractor
+════════════════════════════════════════════════════
+`;
+      zip.file("README.txt", readme);
+
+      // 5. Assets list
+      const assetsList = `
+========== SCRIPTS ==========
+${scriptLinks.join("\n")}
+
+========== STYLES ==========
+${styleLinks.join("\n")}
+
+========== IMAGES ==========
+${imageLinks.join("\n")}
+
+========== ICONS ==========
+${iconLinks.join("\n")}
+`;
+      zip.file("assets-list.txt", assetsList);
+
+      const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="ZXH-OFFICIAL-Extracted.zip"`);
+      return res.status(200).send(zipBuffer);
+    }
+
+    // ========== JSON Response ==========
     return res.status(200).json({
       success: true,
       requestedUrl: req.query.url,
       correctedUrl: target,
       finalUrl,
       status: response.status,
-      statusText: response.statusText,
-      headers: headersObj,
-      metadata: { title, meta },
       assets: {
-        scripts,
-        styles,
-        images,
-        links,
-        icons,
-        videos,
-        audios,
-        iframes
+        scripts: scriptLinks,
+        styles: styleLinks,
+        images: imageLinks,
+        icons: iconLinks
+      },
+      downloaded: {
+        css: cssFiles.map(f => ({ path: f.path, size: f.code.length })),
+        js: jsFiles.map(f => ({ path: f.path, size: f.code.length }))
       },
       sourceCode: html,
       powered_by: "𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋",
@@ -103,4 +222,4 @@ export default async function handler(req, res) {
       powered_by: "𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋"
     });
   }
-        }
+          }
