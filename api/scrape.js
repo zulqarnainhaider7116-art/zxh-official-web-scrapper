@@ -50,34 +50,28 @@ export default async function handler(req, res) {
 
     const getAll = (regex) => [...html.matchAll(regex)].map(m => m[1]).filter(Boolean);
 
-    // تمام لنکس نکالو
+    // تمام لنکس
     const scriptLinks = [...new Set(getAll(/<script[^>]+src=["']([^"']+)["']/gi).map(abs))];
     const styleLinks  = [...new Set(getAll(/<link[^>]+rel=["']?stylesheet["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
     const imageLinks  = [...new Set(getAll(/<img[^>]+src=["']([^"']+)["']/gi).map(abs))];
     const iconLinks   = [...new Set(getAll(/<link[^>]+rel=["']?(?:icon|shortcut icon|apple-touch-icon)["']?[^>]*href=["']([^"']+)["']/gi).map(abs))];
 
-    // فائل کا اصل نام اور فولڈر نکالنے والا فنکشن
+    // اصل path نکالنے والا فنکشن
     function getPathFromUrl(fileUrl) {
       try {
         const u = new URL(fileUrl);
         let path = u.pathname;
 
-        // آخر میں / ہو تو ہٹا دو
         if (path.endsWith("/")) path = path.slice(0, -1);
-
-        // اگر صرف / ہو تو index رکھو
-        if (!path || path === "/") return "index.html";
-
-        // شروع کا / ہٹا دو
         if (path.startsWith("/")) path = path.slice(1);
 
-        return path || "file";
+        return path || null;
       } catch {
-        return "file";
+        return null;
       }
     }
 
-    // ========== CSS & JS ڈاؤن لوڈ ==========
+    // CSS & JS ڈاؤن لوڈ
     const cssFiles = [];
     const jsFiles = [];
 
@@ -109,37 +103,32 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    // ========== ZIP بنانا ==========
+    // ========== ZIP ==========
     if (wantZip) {
       const zip = new JSZip();
 
-      // 1. Main HTML
+      // Main HTML
       zip.file("index.html", html);
 
-      // 2. CSS فائلیں (اصل نام + فولڈر کے ساتھ)
-      cssFiles.forEach((file) => {
-        // اگر path میں css/ نہیں ہے تو css/ فولڈر میں ڈال دو
+      // CSS files (اصل نام + فولڈر اگر ہو)
+      cssFiles.forEach((file, index) => {
         let finalPath = file.path;
-        if (!finalPath.includes("/") && !finalPath.endsWith(".css")) {
-          finalPath = `css/${finalPath}.css`;
-        } else if (!finalPath.includes("/")) {
-          finalPath = `css/${finalPath}`;
+        if (!finalPath) {
+          finalPath = `style-${index + 1}.css`;
         }
         zip.file(finalPath, file.code);
       });
 
-      // 3. JS فائلیں
-      jsFiles.forEach((file) => {
+      // JS files (اصل نام + فولڈر اگر ہو)
+      jsFiles.forEach((file, index) => {
         let finalPath = file.path;
-        if (!finalPath.includes("/") && !finalPath.endsWith(".js")) {
-          finalPath = `js/${finalPath}.js`;
-        } else if (!finalPath.includes("/")) {
-          finalPath = `js/${finalPath}`;
+        if (!finalPath) {
+          finalPath = `script-${index + 1}.js`;
         }
         zip.file(finalPath, file.code);
       });
 
-      // 4. README
+      // README
       const readme = `
 ════════════════════════════════════════════════════
                 𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋
@@ -157,12 +146,9 @@ https://whatsapp.com/channel/0029Vb6lszR7YSd3iYfa2V0n
 ────────────────────────────────────────────────────
 
 ZIP Contents:
-- index.html          → Complete HTML source
-- css/ or original    → All CSS files (original names)
-- js/  or original    → All JS files (original names)
-- assets-list.txt     → Images + Icons links
-
-Note: Images are listed only (not downloaded) to keep size small.
+- index.html
+- CSS & JS files (original names & folders if existed)
+- assets-list.txt
 
 ════════════════════════════════════════════════════
           𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋 • Full Site Extractor
@@ -170,7 +156,7 @@ Note: Images are listed only (not downloaded) to keep size small.
 `;
       zip.file("README.txt", readme);
 
-      // 5. Assets list
+      // Assets list
       const assetsList = `
 ========== SCRIPTS ==========
 ${scriptLinks.join("\n")}
@@ -193,7 +179,7 @@ ${iconLinks.join("\n")}
       return res.status(200).send(zipBuffer);
     }
 
-    // ========== JSON Response ==========
+    // ========== JSON ==========
     return res.status(200).json({
       success: true,
       requestedUrl: req.query.url,
@@ -222,4 +208,4 @@ ${iconLinks.join("\n")}
       powered_by: "𝐙𝐗𝐇 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋"
     });
   }
-          }
+    }
